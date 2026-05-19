@@ -106,14 +106,29 @@ def compare_schedules(df_old: pd.DataFrame, df_new: pd.DataFrame, grade_id: int)
                     val_new = str(row[col_new]) if pd.notna(row[col_new]) else ''
                     
                     if val_old != val_new:
-                        changes.append({
-                            'grade_id': grade_id,
-                            'funcionario': func,
-                            'data': data,
-                            'tipo': 'ALTERACAO',
-                            'campo': col.title(),
-                            'valor_antigo': val_old,
-                            'valor_novo': val_new
-                        })
+                        if val_new == 'CANCELADO':
+                            # Encontra a coluna de evento/programa real
+                            ev_col = next((c for c in row.index if c.endswith('_old') and ('evento' in c.lower() or 'programa' in c.lower() or 'descri' in c.lower())), None)
+                            ev_name = str(row.get(ev_col, 'Evento')) if ev_col else 'Evento'
+                            
+                            changes.append({
+                                'grade_id': grade_id,
+                                'funcionario': func,
+                                'data': data,
+                                'tipo': 'SAIDA',
+                                'campo': ev_name,
+                                'valor_antigo': val_old,
+                                'valor_novo': val_new
+                            })
+                        else:
+                            changes.append({
+                                'grade_id': grade_id,
+                                'funcionario': func,
+                                'data': data,
+                                'tipo': 'ALTERACAO',
+                                'campo': col.title(),
+                                'valor_antigo': val_old,
+                                'valor_novo': val_new
+                            })
                         
     return changes

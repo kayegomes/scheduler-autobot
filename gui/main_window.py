@@ -30,6 +30,9 @@ class MainWindow(ctk.CTk):
         self.btn_sync = ctk.CTkButton(self.top_frame, text="Sincronizar Agora", command=self.on_sync)
         self.btn_sync.pack(side="right", padx=20, pady=10)
         
+        self.btn_load_base = ctk.CTkButton(self.top_frame, text="Carregar Escala Base Inicial", fg_color="#2ecc71", hover_color="#27ae60", command=self.on_load_base)
+        self.btn_load_base.pack(side="right", padx=10, pady=10)
+        
         # Tabview
         self.tabview = ctk.CTkTabview(self)
         self.tabview.grid(row=1, column=0, sticky="nsew", padx=20, pady=(10, 20))
@@ -54,6 +57,29 @@ class MainWindow(ctk.CTk):
         self.after(5000, lambda: self.btn_sync.configure(state="normal", text="Sincronizar Agora"))
         # Force refresh immediately
         self.after(2000, self.refresh_data)
+
+    def on_load_base(self):
+        from tkinter import filedialog, messagebox
+        import pandas as pd
+        import os
+        
+        filepath = filedialog.askopenfilename(
+            title="Selecione a Escala Base Inicial",
+            filetypes=[("Excel/CSV files", "*.xlsx *.csv")]
+        )
+        if filepath:
+            try:
+                if filepath.endswith('.csv'):
+                    df = pd.read_csv(filepath)
+                else:
+                    df = pd.read_excel(filepath)
+                    
+                filename = os.path.basename(filepath)
+                grade_id = self.db.save_new_grade(df, filename, "carga_manual")
+                messagebox.showinfo("Sucesso", f"Escala Base carregada com sucesso! (ID: {grade_id})\nLinhas importadas: {len(df)}")
+                self.refresh_data()
+            except Exception as e:
+                messagebox.showerror("Erro", f"Falha ao carregar o arquivo:\n{e}")
 
     def refresh_data(self):
         # Update UI components

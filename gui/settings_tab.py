@@ -26,6 +26,9 @@ class SettingsTab:
         self.create_label_entry("Intervalo Verificação (min):", "check_interval_min", row)
         row += 1
         
+        self.create_label_entry("Termos Imunes (separados por vírgula):", "immune_keywords", row)
+        row += 1
+        
         # Modo Teste Checkbox
         self.test_mode_var = ctk.StringVar(value=str(self.configs.get("test_mode", "1")))
         self.check_test = ctk.CTkCheckBox(self.parent, text="Modo Teste (Simula envio no console)", variable=self.test_mode_var, onvalue="1", offvalue="0")

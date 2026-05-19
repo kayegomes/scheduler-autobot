@@ -158,18 +158,38 @@ class DatabaseManager:
             
             # Reconstruct original DataFrame from raw_data if needed, but for diff we need it
             if not df.empty:
-                df_reconstructed = pd.read_json(df['raw_data'].to_json(orient='records'))
+                import io
+                json_str = df['raw_data'].to_json(orient='records')
+                df_reconstructed = pd.read_json(io.StringIO(json_str))
                 # Actually raw_data is a string of JSON in each row
-                df_expanded = df['raw_data'].apply(pd.read_json, typ='series')
+                df_expanded = df['raw_data'].apply(lambda x: pd.read_json(io.StringIO(x), typ='series'))
                 return df_expanded
             return pd.DataFrame()
 
     def get_employee_email(self, name: str) -> str:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT email FROM funcionarios WHERE nome = ?', (name,))
-            result = cursor.fetchone()
-            return result[0] if result else None
+            
+            # 1. Tenta Match Exato
+            cursor.execute('SELECT nome, email FROM funcionarios')
+            rows = cursor.fetchall()
+            
+            # Dicionário lower -> email para match exato rápido
+            exact_map = {r[0].strip().lower(): r[1] for r in rows}
+            name_lower = name.strip().lower()
+            if name_lower in exact_map:
+                return exact_map[name_lower]
+                
+            # 2. Tenta Fuzzy Match
+            from difflib import get_close_matches
+            # Pega só os nomes mapeados
+            mapped_names = list(exact_map.keys())
+            matches = get_close_matches(name_lower, mapped_names, n=1, cutoff=0.85)
+            
+            if matches:
+                return exact_map[matches[0]]
+                
+            return None
             
     def update_employee_emails(self, mapping_dict: Dict[str, str]):
         with self.get_connection() as conn:

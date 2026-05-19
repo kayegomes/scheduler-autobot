@@ -22,6 +22,8 @@ class ScheduleProcessor:
         folder = config.get('outlook_folder', 'Caixa de Entrada')
         test_mode = str(config.get('test_mode', '1')) == '1'
         subj = config.get('notification_subject', 'Atualização na sua Escala')
+        immune_keys_str = config.get('immune_keywords', 'VIAGEM, FOLGA, OFF, REUNIAO, GRAVACAO, MEDICO, FERIAS')
+        immune_keys = [k.strip().upper() for k in immune_keys_str.split(',') if k.strip()]
         
         logger.info(f"Iniciando ciclo de processamento. Keyword: {keyword}")
         
@@ -41,13 +43,51 @@ class ScheduleProcessor:
             try:
                 # 3. Lê planilha nova
                 logger.info(f"Processando arquivo recebido: {att_path}")
-                if att_path.endswith('.csv'):
-                    df_new = pd.read_csv(att_path)
-                else:
-                    df_new = pd.read_excel(att_path)
-                    
-                # 4. Lê antiga do BD
+                from core.match_eventos import carregar_grade, buscar_evento_na_grade
+                
+                # 4. Lê antiga do BD primeiro para usar como base se for cruzamento
                 df_old = self.db.get_last_grade_df()
+                
+                grade_tv = carregar_grade(att_path)
+                if grade_tv is not None and not df_old.empty:
+                    logger.info("Arquivo identificado como Grade de TV. Iniciando cruzamento (Match)...")
+                    df_new = df_old.copy()
+                    
+                    # Padroniza colunas do df_old para o match se necessário
+                    # O buscar_evento_na_grade busca por 'Data' e 'Evento/Programa'
+                    col_map = {c.lower(): c for c in df_new.columns}
+                    data_col = col_map.get('data', 'Data')
+                    evento_col = col_map.get('evento', col_map.get('evento/programa', col_map.get('evento/descricao', 'Evento/Programa')))
+                    
+                    for idx, row in df_new.iterrows():
+                        # Cria um dict fake row pro match
+                        match_row = {
+                            'Data': row.get(data_col),
+                            'Evento/Programa': row.get(evento_col),
+                            'Início': row.get(col_map.get('inicio', 'inicio')),
+                            'Fim': row.get(col_map.get('fim', 'fim'))
+                        }
+                        
+                        match_info = buscar_evento_na_grade(match_row, grade_tv)
+                        if match_info:
+                            # Encontrou correspondência na nova grade, atualiza os horários
+                            df_new.at[idx, col_map.get('inicio', 'inicio')] = match_info.get('horario_inicio', '')
+                            df_new.at[idx, col_map.get('fim', 'fim')] = match_info.get('horario_fim', '')
+                            # Opcional: pre e pos
+                        else:
+                            # Se não encontrou, e não for folga/viagem, pode ter caido
+                            ev_upper = str(row.get(evento_col, '')).upper()
+                            if not any(k in ev_upper for k in immune_keys):
+                                # Evento caiu da grade
+                                df_new.at[idx, col_map.get('inicio', 'inicio')] = "CANCELADO"
+                else:
+                    logger.info("Arquivo lido como Escala Comum.")
+                    if att_path.endswith('.csv'):
+                        df_new = pd.read_csv(att_path)
+                    else:
+                        df_new = pd.read_excel(att_path)
+                    
+                # O df_old já foi lido acima
                 
                 # 5. Salva nova escala no banco
                 filename = os.path.basename(att_path)
@@ -67,12 +107,12 @@ class ScheduleProcessor:
                 logger.info(f"{len(changes)} alterações detectadas e salvas.")
                 
                 # 7. Dispara e-mails
-                self._send_notifications(changes, test_mode, subj)
+                self._send_notifications(changes, df_new, test_mode, subj)
                 
             except Exception as e:
                 logger.error(f"Erro processando arquivo {att_path}:\n{format_exc()}")
 
-    def _send_notifications(self, changes: List[Dict[str, Any]], test_mode: bool, base_subject: str):
+    def _send_notifications(self, changes: List[Dict[str, Any]], df_new: pd.DataFrame, test_mode: bool, base_subject: str):
         # Agrupa mudanças por funcionário
         grouped = {}
         for c in changes:
@@ -89,7 +129,9 @@ class ScheduleProcessor:
                 logger.warning(f"E-mail não encontrado no banco para: {func}. Notificação não enviada.")
                 continue
                 
-            success = sender.send_notification(email_address, func, func_changes, subject=base_subject)
+            # Filtra a escala completa apenas deste funcionário para enviar no email
+            df_func = df_new[df_new['funcionario'].str.lower() == func.lower()] if df_new is not None else None
+            success = sender.send_notification(email_address, func, func_changes, df_func, subject=base_subject)
             # Para fins de agilidade, marcaremos o lote todo como enviado no nível da grade,
             # mas o ideal seria capturar os IDs individuais das changes.
                 
