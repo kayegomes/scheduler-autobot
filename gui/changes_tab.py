@@ -62,34 +62,40 @@ class ChangesTab:
         
         # Dados originais para filtrar
         self.all_data = []
+        self._assinatura = None
         self.load_data()
-        
+
     def load_data(self):
-        # Evita piscar e sobrecarregar o DB se não mudou a contagem
-        # Aqui podemos ser espertos usando pandas ou cache
         df = self.db.get_recent_changes(limit=200)
-        if df is None or df.empty:
-            self.all_data = []
-        else:
-            # Converte as datas e trata os nulos
-            df = df.fillna('')
-            self.all_data = df.to_dict('records')
-            
+        registros = [] if df is None or df.empty else df.fillna('').to_dict('records')
+
+        # A atualização periódica reconstruía a tabela inteira a cada ciclo,
+        # jogando o scroll de volta para o topo enquanto o usuário navegava.
+        # Só redesenha quando os dados realmente mudaram.
+        assinatura = (len(registros), tuple(r.get('id') for r in registros[:50]),
+                      tuple(r.get('email_enviado') for r in registros[:50]))
+        if assinatura == self._assinatura:
+            return
+
+        self._assinatura = assinatura
+        self.all_data = registros
         self.apply_filter()
 
     def apply_filter(self):
         term = self.entry_func.get().lower()
-        
+
         # Limpa tabela
         for item in self.tree.get_children():
             self.tree.delete(item)
-            
+
         filtered = [r for r in self.all_data if term in str(r.get('funcionario', '')).lower()]
-        
+
         for r in filtered:
-            data_detec = str(r['data_deteccao'])[:16] # tira segundos e resto
-            enviado = "Sim" if r['email_enviado'] else "Não"
-            vals = (data_detec, r['funcionario'], r['data_escala'], r['tipo'], r['campo'], r['valor_antigo'], r['valor_novo'], enviado)
+            data_detec = str(r.get('data_deteccao', ''))[:16] # tira segundos e resto
+            enviado = "Sim" if r.get('email_enviado') else "Não"
+            vals = (data_detec, r.get('funcionario', ''), r.get('data_escala', ''),
+                    r.get('tipo', ''), r.get('campo', ''), r.get('valor_antigo', ''),
+                    r.get('valor_novo', ''), enviado)
             self.tree.insert("", "end", values=vals)
 
     def export_excel(self):

@@ -482,27 +482,43 @@ def carregar_grade(caminho: str) -> Optional[pd.DataFrame]:
         
         # Deduplicar e empilhar (flatten) blocos lado a lado se houver múltiplos "DATA"
         # Isso acontece em grades da TV fechada (ex: Sportv 1, 2, 3 lado a lado)
-        data_indices = [idx for idx, h in enumerate(headers) if "DATA" in h]
+        #
+        # A comparação precisa ser EXATA. Com `"DATA" in h`, a coluna `Data_raw`
+        # da escala individual contava como um segundo bloco: a planilha era
+        # fatiada a partir da 1ª coluna DATA e perdia `Nome`, `Tipo Atividade` e
+        # `Descrição` — o que fazia a escala ser confundida com grade de TV e
+        # descartada inteira.
+        data_indices = [idx for idx, h in enumerate(headers) if h.strip() == "DATA"]
         
         if len(data_indices) > 1:
             safe_print(f"Detectados {len(data_indices)} blocos lado a lado. Planificando...")
             flattened_rows = []
-            
+
+            # Colunas à ESQUERDA do primeiro bloco são contexto comum da linha
+            # (ex.: 'DATA GRADE', 'DIA DA SEMANA'). Descartá-las fazia a grade
+            # de setembro perder a data em 98% das linhas: as colunas DATA de
+            # cada bloco só são preenchidas esporadicamente, enquanto a data
+            # real da linha mora justamente nesse prefixo.
+            prefix_headers = headers[:data_indices[0]]
+
             for row in rows:
+                prefixo = dict(zip(prefix_headers, row[:data_indices[0]]))
+
                 for i in range(len(data_indices)):
                     start_idx = data_indices[i]
                     end_idx = data_indices[i+1] if i+1 < len(data_indices) else len(headers)
-                    
+
                     sub_row = row[start_idx:end_idx]
                     sub_headers = headers[start_idx:end_idx]
-                    
+
                     # Só adiciona se houver algum valor útil (excluir blocos inteiramente vazios)
                     # Só adiciona se a "DATA" ou "INÍCIO" deste bloco não estiver vazia
                     if len(sub_row) > 0 and (sub_row[0] or (len(sub_row) > 1 and sub_row[1])):
-                        # Preenche com None caso o slice seja menor que o maior número de colunas num bloco (raro)
-                        # O ideal seria um dict
-                        flattened_rows.append(dict(zip(sub_headers, sub_row)))
-            
+                        # O bloco vence o prefixo quando os dois trazem a mesma coluna.
+                        registro = dict(prefixo)
+                        registro.update(dict(zip(sub_headers, sub_row)))
+                        flattened_rows.append(registro)
+
             df = pd.DataFrame(flattened_rows)
         else:
             df = pd.DataFrame(rows, columns=headers)
@@ -512,6 +528,19 @@ def carregar_grade(caminho: str) -> Optional[pd.DataFrame]:
         
         # O cabeçalho no df agora não tem acentos. (ex: 'DATA', 'PRE', 'POS', 'INICIO', 'FIM')
         if "DATA" in df.columns:
+            # Completa a data do bloco com a data comum da linha quando o bloco
+            # não a repete ('DATA GRADE', 'DATA REAL'). Sem isso a grade tem
+            # evento, mas o match não acha porque a linha ficou sem data.
+            alternativas = [
+                c for c in df.columns
+                if c != "DATA" and "DATA" in c and "SEMANA" not in c
+            ]
+            for alt in alternativas:
+                faltando = df["DATA"].isna() | (df["DATA"].astype(str).str.strip() == "")
+                if not faltando.any():
+                    break
+                df.loc[faltando, "DATA"] = df.loc[faltando, alt]
+
             df["DATA"] = pd.to_datetime(df["DATA"], errors="coerce", dayfirst=True)
             
             # --- FIX: Tratar anos 1900 (Excel bug when year is omitted) ---
@@ -618,11 +647,22 @@ def carregar_grade(caminho: str) -> Optional[pd.DataFrame]:
         # Garantir EVENTO/CAMPEONATO e JOGO (mesma lógica flexível)
         if "EVENTO/CAMPEONATO" not in df.columns:
             campeonato_col = next((c for c in df.columns if "CAMPEONATO" in c or "EVENTO" in c), None)
-            df["EVENTO/CAMPEONATO"] = df[campeonato_col] if campeonato_col else ""
+            df["EVENTO/CAMPEONATO"] = df[campeonato_col].fillna("").astype(str) if campeonato_col else ""
             
         if "JOGO" not in df.columns:
             jogo_col = next((c for c in df.columns if "JOGO" in c or "PARTIDA" in c), None)
-            df["JOGO"] = df[jogo_col] if jogo_col else ""
+            
+            if "MANDANTE" in df.columns and "VISITANTE" in df.columns:
+                j_str = df["MANDANTE"].fillna("").astype(str) + " X " + df["VISITANTE"].fillna("").astype(str)
+                df["JOGO"] = j_str.replace("^ X $", "", regex=True)
+            elif "OBSERVACAO" in df.columns:
+                df["JOGO"] = df["OBSERVACAO"].fillna("").astype(str)
+            elif "COMENTARIOS" in df.columns:
+                df["JOGO"] = df["COMENTARIOS"].fillna("").astype(str)
+            elif jogo_col:
+                df["JOGO"] = df[jogo_col].fillna("").astype(str)
+            else:
+                df["JOGO"] = ""
 
         safe_print(
             f"[OK] Grade carregada via scan dinâmico: {len(df)} linhas lidas."
@@ -702,6 +742,14 @@ def buscar_na_grade(
 
     melhor_score = 0.0
     melhor_linha = None
+    melhor_dist = None
+
+    # Distância até o horário que o profissional já tem na escala. Serve de
+    # critério de desempate: um mesmo programa vai ao ar várias vezes no dia
+    # (SporTV News às 07:00 e às 21:00) e todas as exibições têm score de texto
+    # idêntico. Sem desempate vencia a primeira da planilha, o que produzia
+    # "mudança de horário" de 14 horas.
+    ref_min = _hora_min(inicio_rel)
 
     for _, linha in dia.iterrows():
         campeonato = str(linha.get("EVENTO/CAMPEONATO", "") or "")
@@ -719,9 +767,26 @@ def buscar_na_grade(
             pre_grade       = pre_g,
             fim_grade_val   = fim_g,
         )
+        # Distância (em minutos) entre o horário desta linha da grade e o que
+        # o profissional já tem na escala.
+        dist = None
+        if ref_min is not None:
+            ini_g = _hora_min(linha.get("INICIO", ""))
+            if ini_g is not None:
+                bruta = abs(ini_g - ref_min)
+                dist = min(bruta, 1440 - bruta)
+
         if score > melhor_score:
-            melhor_score = score
-            melhor_linha = linha
+            melhor_score, melhor_linha, melhor_dist = score, linha, dist
+        elif (
+            score == melhor_score
+            and melhor_linha is not None
+            and dist is not None
+            and (melhor_dist is None or dist < melhor_dist)
+        ):
+            # Mesmo score de texto: fica a exibição mais próxima do horário
+            # que já estava na escala.
+            melhor_linha, melhor_dist = linha, dist
 
     if melhor_linha is None or melhor_score < threshold:
         if melhor_score >= 0.2:

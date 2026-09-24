@@ -1,7 +1,27 @@
 __pycache__/
 *.pyc
 .env
-data/*.db
-data/*.csv
-data/*.xlsx
+
+# Banco local e anexos baixados do Outlook
+data/
 logs/
+
+# Saída do Modo Teste: contém escalas reais de funcionários
+emails_teste/
+automacao_escala.log
+
+# DADOS INTERNOS — nunca versionar neste repositório público.
+# Planilhas de escala e grades de programação trazem nomes de funcionários,
+# horários e programação não veiculada.
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+
+# Previews e dumps gerados a partir dessas planilhas
+exemplo_*.html
+preview_*.html
+teste_email_*.html
+output.json
+output.txt
+scratch/

@@ -41,7 +41,8 @@ class DashboardTab:
             self.top5_labels.append(lbl)
             
         self.canvas_widget = None
-            
+        self._assinatura_grafico = None
+
         # Initial load
         self.load_data()
 
@@ -81,13 +82,18 @@ class DashboardTab:
             if i < len(self.top5_labels):
                 self.top5_labels[i].configure(text=f"{i+1}. {name} ({count} alterações)")
             
-        # Draw Charts
-        self.draw_charts(df)
-        
+        # Redesenha os gráficos só quando os dados mudaram. Antes, a
+        # atualização periódica reconstruía a figura do matplotlib do zero a
+        # cada ciclo, mesmo sem nenhuma alteração nova.
+        assinatura = (len(df), str(df['data_deteccao'].iloc[0]) if len(df) else '')
+        if assinatura != self._assinatura_grafico:
+            self._assinatura_grafico = assinatura
+            self.draw_charts(df)
+
     def draw_charts(self, df):
         if self.canvas_widget:
             self.canvas_widget.destroy()
-            
+
         fig = Figure(figsize=(8, 4), dpi=100)
         fig.patch.set_facecolor('#2b2b2b') # CTk dark mode generic bg
         
