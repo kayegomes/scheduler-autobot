@@ -48,20 +48,47 @@ Vá na aba **Configurações** para calibrar a automação:
 - **Pasta do Outlook**: Normalmente *Caixa de Entrada*, mas você pode criar regras e apontar para subpastas.
 - **Termos Imunes (Exceções)**: Termos que **NÃO** podem ser considerados como "Eventos de TV" que caíram. Exemplo: `VIAGEM, FOLGA, OFF, REUNIAO, FERIAS`. Se o funcionário estava de FOLGA na escala antiga, e a palavra "FOLGA" não está na Grade de TV, o sistema respeitará e *não* cancelará essa folga.
 - **Mapeamento de E-mails**: Preencha linha a linha associando o nome que vem na escala com o e-mail da empresa.
-  Exemplo: `Valesca Maranhão=valesca@globo.com`
+  Exemplo: `Marina Tavares=marina.tavares@exemplo.com`
+
+  > Sem essa tabela preenchida **nenhuma notificação é enviada** — o nome tem
+  > que casar com o que vem na planilha. Para gerar a lista já no formato certo
+  > a partir da escala carregada:
+  > ```bash
+  > python scripts/gerar_mapeamento.py -o mapa.txt
+  > ```
+  > Nomes sem acento são reconhecidos automaticamente (`Marina Tavares` casa com
+  > `Marína Tavares`). Um nome que não bata o primeiro **e** o último sobrenome
+  > é recusado de propósito, para não mandar a escala de uma pessoa a outra.
 
 ### 3. Modo de Teste e Sincronização
 Ao clicar em **"Sincronizar Agora"** (ou automaticamente a cada X minutos), o sistema varre o e-mail em busca da grade nova.
-- Se o **Modo Teste** estiver ligado nas configurações, o sistema **NÃO ENVIARÁ E-MAILS DE VERDADE**. Ele irá processar todas as diferenças e criará uma pasta local chamada `emails_teste/` contendo arquivos HTML individuais para você visualizar no seu navegador exatamente como o e-mail ficaria.
-- Quando terminar a homologação, desative o Modo Teste, salve as configurações e o envio para os funcionários começará.
+- Se o **Modo Teste** estiver ligado, o sistema **NÃO ENVIA E-MAIL** e **não grava no histórico de produção**. Cada arquivo processado gera uma pasta datada em `emails_teste/`:
+
+  ```
+  emails_teste/20260924_180542_GRADE_DE_SETEMBRO_-_27ª_VERSÃO/
+      RESUMO.txt        base usada, contagens, avisos, funcionários afetados
+      alteracoes.xlsx   todas as alterações + aba por funcionário
+      emails/           um preview HTML por pessoa que seria notificada
+  ```
+
+  A pasta raiz é configurável em *Configurações → Pasta dos relatórios de teste*. Quem ainda não tem e-mail cadastrado aparece como `SEM_EMAIL_<nome>.html`, para você conferir o conteúdo antes de montar o mapeamento.
+- Quando terminar a homologação, desative o Modo Teste e salve. Os e-mails homologados voltam à fila e são processados de verdade.
+
+> **Trava de segurança**: acima de `max_funcionarios_por_ciclo` (padrão 25) pessoas afetadas num único ciclo, o envio é bloqueado e as alterações ficam no histórico como não enviadas. Isso costuma indicar base de comparação defasada — por exemplo uma grade de outro mês. Em Modo Teste o limite só avisa, não bloqueia.
 
 ---
 
 ## 📂 Arquitetura do Projeto
 
 * `main.py` e `gui/`: Contêm toda a interface gráfica Desktop (CustomTkinter).
+* `core/columns.py`: **Fonte única de verdade sobre nomes e valores de coluna.** Normaliza `Início`/`inicio` para a mesma coluna canônica e converte datas/horários para `dd/mm/aaaa` e `HH:MM` antes de gravar. Também classifica o anexo em escala ou grade de TV.
 * `core/schedule_processor.py`: Orquestrador que junta o e-mail baixado com a inteligência do banco de dados e dispara as etapas.
 * `core/match_eventos.py`: Motor avançado que converte uma Grade de TV densa (com várias colunas lado a lado) num formato que se encaixe na escala dos funcionários.
 * `core/diff_engine.py`: A inteligência que compara a versão A com a versão B e levanta exatamente qual célula (horário, descrição, status) foi modificada.
 * `core/email_sender.py`: Manipulador COM do Outlook para gerar e enviar e-mails em HTML.
+* `core/test_report.py`: Monta a pasta de relatório do Modo Teste.
+* `scripts/`: `gerar_mapeamento.py` (lista de funcionários no formato do mapeamento) e `corrigir_baseline.py` (reverte grades duplicadas que tenham virado base de comparação).
+* `tests/test_regressao.py`: Um teste por defeito já corrigido. Roda com `python -m unittest discover -s tests -v`.
+
+> As planilhas de escala e as grades de programação **não são versionadas** (ver `.gitignore`): trazem nomes de funcionários e programação não veiculada. Os testes que dependem delas são pulados automaticamente num clone limpo — coloque os arquivos na raiz do projeto para rodar a suíte completa.
 * `core/database.py`: Gerencia as tabelas no SQLite local (`data/scheduler.db`).
