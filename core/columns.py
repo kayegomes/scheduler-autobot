@@ -232,6 +232,12 @@ def _fmt_data(v: Any) -> str:
     if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", s):
         d, m, a = s.split("/")
         return f"{int(d):02d}/{int(m):02d}/{a}"
+    # ISO (ano primeiro) precisa ser tratado antes do parser tolerante: com
+    # dayfirst=True o pandas lê '2026-07-01' como 7 de janeiro.
+    iso = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]|$)", s)
+    if iso:
+        a, m, d = iso.groups()
+        return f"{int(d):02d}/{int(m):02d}/{a}"
     if re.fullmatch(r"-?\d{12,}", s):  # epoch em ms que chegou como string
         try:
             return pd.Timestamp(int(s), unit="ms").strftime("%d/%m/%Y")

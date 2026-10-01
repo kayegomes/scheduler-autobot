@@ -13,7 +13,10 @@ import unittest
 
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_AQUI = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_AQUI))  # raiz do projeto
+sys.path.insert(0, _AQUI)                   # permite 'import fixtures' em
+                                            # 'unittest tests.test_regressao'
 
 from core.columns import (  # noqa: E402
     carregar_escala, detectar_tipo_planilha, normalizar_colunas, preparar_escala,
@@ -22,19 +25,43 @@ from core.database import DatabaseManager  # noqa: E402
 from core.diff_engine import compare_schedules  # noqa: E402
 from core.email_sender import EmailSender  # noqa: E402
 
+import fixtures  # noqa: E402
+
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Planilhas sintéticas, criadas uma vez por execução. Reproduzem as manhas do
+# formato real (ver tests/fixtures.py), então a suíte roda inteira num clone
+# limpo — sem depender de arquivos com dados de funcionários.
+ESCALA = ""
+GRADE = ""
+GRADE_ESPECIALIZADA = ""
+GRADE_OUTRO_PERIODO = ""
+_TMP_FIXTURES = ""
+
+# As planilhas de produção continuam servindo de validação extra quando estão
+# presentes na raiz do projeto, mas nenhum teste depende delas.
 ESCALA_REAL = os.path.join(RAIZ, "Check_Pre_Envio_Gerado.xlsx")
 GRADE_REAL = os.path.join(RAIZ, "GRADE DE EVENTOS COMBATE 2026 - JULHO  (V4).xlsx")
-
-# As planilhas de referência trazem nomes de funcionários e programação interna,
-# por isso não são versionadas (ver .gitignore). Os testes que dependem delas
-# são pulados num clone limpo — coloque os arquivos na raiz do projeto para
-# rodar a suíte completa.
-TEM_PLANILHAS = os.path.exists(ESCALA_REAL) and os.path.exists(GRADE_REAL)
-precisa_planilhas = unittest.skipUnless(
-    TEM_PLANILHAS,
-    "planilhas de referência ausentes (dados internos, não versionados)"
+precisa_planilhas_reais = unittest.skipUnless(
+    os.path.exists(ESCALA_REAL) and os.path.exists(GRADE_REAL),
+    "planilhas de produção ausentes (dados internos, não versionados)"
 )
+
+
+def setUpModule():
+    global ESCALA, GRADE, GRADE_ESPECIALIZADA, GRADE_OUTRO_PERIODO, _TMP_FIXTURES
+    _TMP_FIXTURES = tempfile.mkdtemp(prefix="fixtures_escala_")
+    ESCALA = fixtures.criar_escala(os.path.join(_TMP_FIXTURES, "escala.xlsx"))
+    GRADE = fixtures.criar_grade_tv(os.path.join(_TMP_FIXTURES, "grade_tv.xlsx"))
+    GRADE_ESPECIALIZADA = fixtures.criar_grade_especializada(
+        os.path.join(_TMP_FIXTURES, "grade_combate.xlsx"))
+    GRADE_OUTRO_PERIODO = fixtures.criar_grade_de_outro_periodo(
+        os.path.join(_TMP_FIXTURES, "grade_outubro.xlsx"))
+
+
+def tearDownModule():
+    import shutil
+    shutil.rmtree(_TMP_FIXTURES, ignore_errors=True)
 
 
 def _db_temporario() -> DatabaseManager:
@@ -62,9 +89,8 @@ class TestNormalizacaoDeColunas(unittest.TestCase):
         self.assertIn("data", df.columns)
         self.assertIn("data_raw", df.columns)
 
-    @precisa_planilhas
     def test_escala_real_resolve_todas_as_colunas_chave(self):
-        df = carregar_escala(ESCALA_REAL)
+        df = carregar_escala(ESCALA)
         for col in ("funcionario", "data", "inicio", "fim", "evento", "pre"):
             self.assertIn(col, df.columns, f"coluna canônica ausente: {col}")
 
@@ -85,22 +111,20 @@ class TestSerializacao(unittest.TestCase):
         self.assertEqual(recarregado.at[0, "data"], "01/07/2026")
         self.assertEqual(recarregado.at[0, "inicio"], "14:30")
 
-    @precisa_planilhas
     def test_planilha_identica_nao_gera_alteracao(self):
         db = _db_temporario()
-        df = carregar_escala(ESCALA_REAL)
+        df = carregar_escala(ESCALA)
         db.save_new_grade(df, "base.xlsx", "id1")
 
-        changes = compare_schedules(db.get_last_grade_df(), carregar_escala(ESCALA_REAL), 2)
+        changes = compare_schedules(db.get_last_grade_df(), carregar_escala(ESCALA), 2)
         self.assertEqual(changes, [], f"{len(changes)} alterações falsas com arquivo idêntico")
 
-    @precisa_planilhas
     def test_alteracao_real_e_detectada(self):
         db = _db_temporario()
-        df = carregar_escala(ESCALA_REAL)
+        df = carregar_escala(ESCALA)
         db.save_new_grade(df, "base.xlsx", "id1")
 
-        df_novo = carregar_escala(ESCALA_REAL)
+        df_novo = carregar_escala(ESCALA)
         df_novo.at[0, "inicio"] = "23:45"
 
         changes = compare_schedules(db.get_last_grade_df(), df_novo, 2)
@@ -128,19 +152,18 @@ class TestSerializacao(unittest.TestCase):
         self.assertEqual(recarregado.at[0, "inicio"], "14:30")
 
 
-@precisa_planilhas
 class TestDeteccaoDeTipo(unittest.TestCase):
     """Crítico #2: a escala real era confundida com grade de TV."""
 
     def test_escala_real_e_escala(self):
-        self.assertEqual(detectar_tipo_planilha(ESCALA_REAL), "escala")
+        self.assertEqual(detectar_tipo_planilha(ESCALA), "escala")
 
     def test_grade_real_e_grade(self):
-        self.assertEqual(detectar_tipo_planilha(GRADE_REAL), "grade_tv")
+        self.assertEqual(detectar_tipo_planilha(GRADE), "grade_tv")
 
     def test_carregar_grade_nao_fatia_escala(self):
         from core.match_eventos import carregar_grade
-        grade = carregar_grade(ESCALA_REAL)
+        grade = carregar_grade(ESCALA)
         # Com o bug, o achatamento descartava a coluna Nome.
         self.assertIsNotNone(grade)
         self.assertIn("NOME", [str(c).upper().strip() for c in grade.columns])
@@ -368,9 +391,6 @@ class _SenderFalso:
             return False
         self.enviados.append(employee_name)
         return True
-
-
-@precisa_planilhas
 class TestCicloDeProcessamento(unittest.TestCase):
     """Críticos #2/#5 e Alto #7/#8, no caminho real do ScheduleProcessor."""
 
@@ -391,13 +411,13 @@ class TestCicloDeProcessamento(unittest.TestCase):
 
     def _base_e_arquivo_novo(self):
         """Carrega a escala real como base e devolve um arquivo com 1 mudança."""
-        df = carregar_escala(ESCALA_REAL)
+        df = carregar_escala(ESCALA)
         self.db.save_new_grade(df, "base.xlsx", "carga_manual")
 
         alvo = df.iloc[0]["funcionario"]
         self.db.update_employee_emails({alvo: "alvo@exemplo.com"})
 
-        df_novo = carregar_escala(ESCALA_REAL)
+        df_novo = carregar_escala(ESCALA)
         df_novo.at[0, "inicio"] = "23:45"
         destino = os.path.join(tempfile.mkdtemp(), "nova_escala.xlsx")
         df_novo.to_excel(destino, index=False)
@@ -438,10 +458,10 @@ class TestCicloDeProcessamento(unittest.TestCase):
         # O e-mail continua elegível e a grade pendente não virou base.
         self.assertFalse(self.db.is_email_processed("email-3"))
         self.db.descartar_grades_pendentes("email-3")
-        self.assertEqual(len(self.db.get_last_grade_df()), len(carregar_escala(ESCALA_REAL)))
+        self.assertEqual(len(self.db.get_last_grade_df()), len(carregar_escala(ESCALA)))
 
     def test_trava_de_envio_em_massa(self):
-        self.db.save_new_grade(carregar_escala(ESCALA_REAL), "base.xlsx", "carga_manual")
+        self.db.save_new_grade(carregar_escala(ESCALA), "base.xlsx", "carga_manual")
         sender = self._instalar_sender()
 
         # Escala completamente diferente -> todo mundo entra e sai.
@@ -459,17 +479,17 @@ class TestCicloDeProcessamento(unittest.TestCase):
 
     def test_grade_tv_sem_base_nao_vira_escala(self):
         sender = self._instalar_sender()
-        self.processor._processar_arquivo("email-5", GRADE_REAL, ["FOLGA"], False, "Assunto", 25)
+        self.processor._processar_arquivo("email-5", GRADE, ["FOLGA"], False, "Assunto", 25)
 
         self.assertTrue(self.db.get_last_grade_df().empty)
         self.assertEqual(sender.enviados, [])
 
     def test_grade_tv_de_outro_periodo_nao_cancela_escala(self):
         """Nenhum match + cancelamento em massa = grade errada, aborta."""
-        self.db.save_new_grade(carregar_escala(ESCALA_REAL), "base.xlsx", "carga_manual")
+        self.db.save_new_grade(carregar_escala(ESCALA), "base.xlsx", "carga_manual")
         sender = self._instalar_sender()
 
-        self.processor._processar_arquivo("email-6", GRADE_REAL, ["FOLGA"], False, "Assunto", 25)
+        self.processor._processar_arquivo("email-6", GRADE_ESPECIALIZADA, ["FOLGA"], False, "Assunto", 25)
 
         changes = self.db.get_recent_changes()
         cancelados = [c for _, c in changes.iterrows() if str(c["valor_novo"]).upper() == "CANCELADO"]
@@ -477,7 +497,6 @@ class TestCicloDeProcessamento(unittest.TestCase):
         self.assertEqual(sender.enviados, [])
 
 
-@precisa_planilhas
 class TestGradeSemEfeito(unittest.TestCase):
     """Defeitos observados no log de 24/09: grades no-op soterrando a base."""
 
@@ -498,16 +517,16 @@ class TestGradeSemEfeito(unittest.TestCase):
         No log real, seis grades idênticas à base foram criadas assim — e a
         última soterrou a escala que o usuário tinha acabado de carregar.
         """
-        base_id = self.db.save_new_grade(carregar_escala(ESCALA_REAL), "base.xlsx", "carga_manual")
+        base_id = self.db.save_new_grade(carregar_escala(ESCALA), "base.xlsx", "carga_manual")
 
-        self.processor._processar_arquivo("email-x", GRADE_REAL, ["FOLGA"], False, "Assunto", 25)
+        self.processor._processar_arquivo("email-x", GRADE_OUTRO_PERIODO, ["FOLGA"], False, "Assunto", 25)
 
         self.assertEqual(self.db.get_baseline_id(), base_id,
                          "a base de comparação não pode mudar por uma grade sem efeito")
 
     def test_carga_manual_sobrevive_ao_ciclo(self):
         """Sequência exata do log: base antiga -> carga manual -> grade no-op."""
-        self.db.save_new_grade(carregar_escala(ESCALA_REAL), "base_antiga.xlsx", "carga_manual")
+        self.db.save_new_grade(carregar_escala(ESCALA), "base_antiga.xlsx", "carga_manual")
 
         nova = pd.DataFrame([
             {"Nome": "Paulo Reis", "Data": "21/09/2026", "Início": "10:00",
@@ -515,7 +534,7 @@ class TestGradeSemEfeito(unittest.TestCase):
         ])
         id_manual = self.db.save_new_grade(nova, "escala_setembro.xlsx", "carga_manual")
 
-        self.processor._processar_arquivo("email-y", GRADE_REAL, ["FOLGA"], False, "Assunto", 25)
+        self.processor._processar_arquivo("email-y", GRADE_OUTRO_PERIODO, ["FOLGA"], False, "Assunto", 25)
 
         self.assertEqual(self.db.get_baseline_id(), id_manual,
                          "a escala carregada manualmente foi soterrada")
@@ -523,17 +542,17 @@ class TestGradeSemEfeito(unittest.TestCase):
 
     def test_arquivo_recusado_nao_reprocessa(self):
         """Os 4 arquivos Combate eram rebaixados e recusados a cada 2 minutos."""
-        self.db.save_new_grade(carregar_escala(ESCALA_REAL), "base.xlsx", "carga_manual")
+        self.db.save_new_grade(carregar_escala(ESCALA), "base.xlsx", "carga_manual")
 
         self.assertFalse(self.db.is_email_processed("email-z"))
-        self.processor._processar_arquivo("email-z", GRADE_REAL, ["FOLGA"], False, "Assunto", 25)
+        self.processor._processar_arquivo("email-z", GRADE_OUTRO_PERIODO, ["FOLGA"], False, "Assunto", 25)
         self.assertTrue(self.db.is_email_processed("email-z"),
                         "arquivo recusado deve parar de ser rebaixado")
 
     def test_recusa_e_reavaliada_quando_a_base_muda(self):
         """A recusa vale para aquela base; com escala nova o arquivo volta à fila."""
-        self.db.save_new_grade(carregar_escala(ESCALA_REAL), "base.xlsx", "carga_manual")
-        self.processor._processar_arquivo("email-w", GRADE_REAL, ["FOLGA"], False, "Assunto", 25)
+        self.db.save_new_grade(carregar_escala(ESCALA), "base.xlsx", "carga_manual")
+        self.processor._processar_arquivo("email-w", GRADE_OUTRO_PERIODO, ["FOLGA"], False, "Assunto", 25)
         self.assertTrue(self.db.is_email_processed("email-w"))
 
         self.db.save_new_grade(
@@ -542,9 +561,6 @@ class TestGradeSemEfeito(unittest.TestCase):
         )
         self.assertFalse(self.db.is_email_processed("email-w"),
                          "com outra base, o arquivo precisa ser reavaliado")
-
-
-@precisa_planilhas
 class TestCruzamentoComGradeReal(unittest.TestCase):
     """Defeitos revelados pelo teste com a escala de 21/09 a 25/09."""
 
@@ -554,7 +570,10 @@ class TestCruzamentoComGradeReal(unittest.TestCase):
         self.db = _db_temporario()
         self.processor = sp.ScheduleProcessor(self.db)
 
-    def _cruzar(self, df_escala, grade_path=GRADE_REAL, immune=("VIAGEM", "FOLGA")):
+    def _cruzar(self, df_escala, grade_path=None, immune=("VIAGEM", "FOLGA")):
+        # Resolvido em tempo de chamada: as fixtures só existem depois do
+        # setUpModule, e um argumento default é avaliado no import.
+        grade_path = grade_path or GRADE
         return self.processor._cruzar_com_grade_tv(grade_path, df_escala, list(immune))
 
     def test_grade_nao_apaga_horario_que_nao_informa(self):
@@ -623,22 +642,35 @@ class TestCruzamentoComGradeReal(unittest.TestCase):
 class TestLeituraDeGradeDensa(unittest.TestCase):
     """A grade mensal do Sportv perdia a data em 98% das linhas."""
 
-    GRADE_SETEMBRO = os.path.join(
-        RAIZ, "data", "attachments", "20260924161319_GRADE DE SETEMBRO - 27ª VERSÃO.xlsm"
-    )
-
-    @unittest.skipUnless(os.path.exists(GRADE_SETEMBRO), "grade de setembro não disponível")
     def test_datas_sobrevivem_ao_achatamento_de_blocos(self):
+        """A DATA de cada bloco é vazia: a data da linha mora só no prefixo."""
         from core.match_eventos import carregar_grade
 
-        grade = carregar_grade(self.GRADE_SETEMBRO)
+        grade = carregar_grade(GRADE)
         self.assertIsNotNone(grade)
 
         datas = pd.to_datetime(grade["DATA"], errors="coerce").dropna()
         proporcao = len(datas) / len(grade)
         self.assertGreater(proporcao, 0.90,
                            f"só {proporcao:.0%} das linhas têm data; o prefixo do bloco se perdeu")
-        self.assertEqual(datas.dt.month.unique().tolist(), [9])
+        self.assertEqual(datas.dt.month.unique().tolist(), [fixtures.MES])
+
+    def test_cabecalho_fora_da_primeira_linha_e_encontrado(self):
+        from core.match_eventos import carregar_grade
+
+        grade = carregar_grade(GRADE)
+        self.assertIn("EVENTO/CAMPEONATO", grade.columns)
+        self.assertTrue((grade["INICIO"].astype(str).str.strip() != "").any(),
+                        "os horários do bloco precisam ser lidos")
+
+    def test_blocos_lado_a_lado_sao_empilhados(self):
+        """4 blocos de canal na mesma linha viram 4 linhas na grade."""
+        from core.match_eventos import carregar_grade
+
+        grade = carregar_grade(GRADE)
+        eventos = set(grade["EVENTO/CAMPEONATO"].astype(str))
+        for _, _, esperado in fixtures.GRADE_PADRAO:
+            self.assertIn(esperado, eventos, f"evento perdido no achatamento: {esperado}")
 
     def test_desempate_por_proximidade_de_horario(self):
         """Mesmo programa exibido 2x no dia: vence a exibição mais próxima."""
@@ -661,7 +693,6 @@ class TestLeituraDeGradeDensa(unittest.TestCase):
         self.assertEqual(inicio, "07:00", "deveria casar com a exibição da manhã")
 
 
-@precisa_planilhas
 class TestModoTeste(unittest.TestCase):
     """Homologação em pasta própria, sem tocar no banco de produção."""
 
@@ -673,15 +704,26 @@ class TestModoTeste(unittest.TestCase):
         self.saida = tempfile.mkdtemp(prefix="relatorios_teste_")
         self.processor.pasta_saida_teste = self.saida
 
-        self.df_base = carregar_escala(ESCALA_REAL)
+        self.df_base = carregar_escala(ESCALA)
         self.base_id = self.db.save_new_grade(self.df_base, "base.xlsx", "carga_manual")
         self.db.update_employee_emails(
             {n: f"{n.split()[0].lower()}@teste.local" for n in self.df_base['funcionario'].unique()}
         )
 
-        df_novo = carregar_escala(ESCALA_REAL)
-        df_novo.at[0, "inicio"] = "23:45"
-        df_novo.at[1, "fim"] = "03:30"
+        # Altera o horário de DUAS pessoas diferentes, para a homologação
+        # gerar dois previews distintos.
+        df_novo = carregar_escala(ESCALA)
+        self.afetados = []
+        for idx in df_novo.index:
+            func = df_novo.at[idx, "funcionario"]
+            if func in self.afetados or not str(df_novo.at[idx, "evento"]).strip():
+                continue
+            df_novo.at[idx, "inicio"] = "23:45"
+            self.afetados.append(func)
+            if len(self.afetados) == 2:
+                break
+        self.assertEqual(len(self.afetados), 2, "a fixture precisa ter 2+ funcionários")
+
         self.arquivo = os.path.join(tempfile.mkdtemp(), "nova.xlsx")
         df_novo.to_excel(self.arquivo, index=False)
 
@@ -831,6 +873,39 @@ class TestConcorrencia(unittest.TestCase):
         t.join(timeout=5)
 
         self.assertEqual(len(execucoes), 1)
+
+
+@precisa_planilhas_reais
+class TestPlanilhasDeProducao(unittest.TestCase):
+    """Validação extra contra os arquivos reais, quando estão na raiz.
+
+    As fixtures sintéticas cobrem o comportamento; esta classe confirma que
+    elas continuam fiéis ao formato que a operação realmente envia. Se uma
+    planilha nova mudar de layout, é aqui que aparece primeiro.
+    """
+
+    def test_tipos_sao_classificados_corretamente(self):
+        self.assertEqual(detectar_tipo_planilha(ESCALA_REAL), "escala")
+        self.assertEqual(detectar_tipo_planilha(GRADE_REAL), "grade_tv")
+
+    def test_colunas_canonicas_da_escala_real(self):
+        df = carregar_escala(ESCALA_REAL)
+        for col in ("funcionario", "data", "inicio", "fim", "evento"):
+            self.assertIn(col, df.columns, f"coluna canônica ausente: {col}")
+
+    def test_escala_real_identica_nao_gera_alteracao(self):
+        db = _db_temporario()
+        db.save_new_grade(carregar_escala(ESCALA_REAL), "base.xlsx", "id1")
+        changes = compare_schedules(
+            db.get_last_grade_df(), carregar_escala(ESCALA_REAL), 2
+        )
+        self.assertEqual(changes, [], f"{len(changes)} alterações falsas")
+
+    def test_escala_real_nao_e_fatiada_como_grade(self):
+        from core.match_eventos import carregar_grade
+        grade = carregar_grade(ESCALA_REAL)
+        self.assertIsNotNone(grade)
+        self.assertIn("NOME", [str(c).upper().strip() for c in grade.columns])
 
 
 if __name__ == "__main__":
