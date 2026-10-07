@@ -302,7 +302,7 @@ class ScheduleProcessor:
             return None
 
         df_new = df_old.copy()
-        for col in ('inicio', 'fim'):
+        for col in ('inicio', 'fim', 'pre', 'pos'):
             if col not in df_new.columns:
                 df_new[col] = ''
 
@@ -336,7 +336,17 @@ class ScheduleProcessor:
                 # A grade manda no que ela informa, não no que ela omite.
                 # A grade do Sportv não preenche FIM: sobrescrever com vazio
                 # apagava o horário real e gerava 146 falsos "mudou o horário".
-                for campo, chave in (('inicio', 'horario_inicio'), ('fim', 'horario_fim')):
+                #
+                # PRE e POS entram na mesma regra. Antes só INICIO/FIM eram
+                # aplicados: quando a grade trazia um novo horário de início,
+                # o PRÉ antigo (calculado para o horário anterior) ficava para
+                # trás — "Pré 13:30" com "Início 13:00" é a convocação chegando
+                # DEPOIS do início do evento. Com PRE/POS também vindos do
+                # match, os dois horários mudam juntos.
+                for campo, chave in (
+                    ('inicio', 'horario_inicio'), ('fim', 'horario_fim'),
+                    ('pre', 'pre_jogo'), ('pos', 'pos_jogo'),
+                ):
                     valor = str(match_info.get(chave, '') or '').strip()
                     if valor:
                         df_new.at[idx, campo] = valor

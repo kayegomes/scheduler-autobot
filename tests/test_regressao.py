@@ -603,6 +603,68 @@ class TestCruzamentoComGradeReal(unittest.TestCase):
         self.assertEqual(resultado.at[0, "inicio"], "11:00", "o início informado deve ser aplicado")
         self.assertEqual(resultado.at[0, "fim"], "12:15", "o fim NÃO pode ser apagado pela omissão")
 
+    def test_pre_acompanha_o_inicio_quando_a_grade_muda_o_horario(self):
+        """Caso real: Paulo Mancha, Pré 13:30 / Início 14:00 (consistente) na
+        base. A grade de TV antecipou o jogo para Início 13:00, mas o código
+        só atualizava Início/Fim — o Pré ficava congelado em 13:30, que virou
+        POSTERIOR ao novo início. A convocação aparecia depois do jogo começar.
+        """
+        import core.schedule_processor as sp
+        import core.match_eventos as me
+
+        df = preparar_escala(pd.DataFrame([
+            {"Nome": "Paulo Mancha", "Data": "11/10/2026", "Pré": "13:30",
+             "Início": "14:00", "Fim": "17:00",
+             "Evento/Descrição": "NFL - LAS VEGAS RAIDERS X NEW ENGLAND PATRIOTS"},
+        ]))
+
+        original = me.buscar_evento_na_grade
+        me.buscar_evento_na_grade = lambda row, grade: {
+            'pre_jogo': '12:30', 'pos_jogo': '',
+            'horario_inicio': '13:00', 'horario_fim': '17:00',
+        }
+        datas_orig = sp._datas_da_grade
+        sp._datas_da_grade = lambda g: {"11/10/2026"}
+        try:
+            resultado = self._cruzar(df)
+        finally:
+            me.buscar_evento_na_grade = original
+            sp._datas_da_grade = datas_orig
+
+        self.assertIsNotNone(resultado)
+        self.assertEqual(resultado.at[0, "inicio"], "13:00")
+        self.assertEqual(resultado.at[0, "pre"], "12:30",
+                         "o Pré precisa acompanhar o novo Início informado pela grade")
+        # Consistência: pré sempre antes (ou igual) do início, nunca depois.
+        self.assertLessEqual(resultado.at[0, "pre"], resultado.at[0, "inicio"])
+
+    def test_pre_antigo_e_preservado_quando_a_grade_nao_informa(self):
+        """Mesma regra de 'a grade manda no que informa, não no que omite',
+        agora para PRE: se a grade não trouxer convocação para o evento, o
+        valor da escala anterior é mantido (não é apagado nem zerado)."""
+        import core.schedule_processor as sp
+        import core.match_eventos as me
+
+        df = preparar_escala(pd.DataFrame([
+            {"Nome": "Ana", "Data": "01/07/2026", "Pré": "09:30",
+             "Início": "10:00", "Fim": "12:00", "Evento/Descrição": "JOGO A"},
+        ]))
+
+        original = me.buscar_evento_na_grade
+        me.buscar_evento_na_grade = lambda row, grade: {
+            'pre_jogo': '', 'pos_jogo': '',
+            'horario_inicio': '10:00', 'horario_fim': '12:00',
+        }
+        datas_orig = sp._datas_da_grade
+        sp._datas_da_grade = lambda g: {"01/07/2026"}
+        try:
+            resultado = self._cruzar(df)
+        finally:
+            me.buscar_evento_na_grade = original
+            sp._datas_da_grade = datas_orig
+
+        self.assertEqual(resultado.at[0, "pre"], "09:30")
+
     def test_termo_imune_em_outra_coluna_protege_a_linha(self):
         """'Day Off / Folga' vem em 'descricao', com 'evento' vazio."""
         from core.schedule_processor import _contexto_da_linha
